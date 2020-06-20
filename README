@@ -1,3 +1,103 @@
 简述一下我的代码大体逻辑
-1、每次向service发送abc字符时会产生一个不固定长度的数组，这个数组长度由随机数生成（5～10之间），数组长度多长，我们的计数器NumCount就进行同样次数的加1操作，之后使用一个循环，生成数组元素，生成数组元素仍然使用随机数（0～10之间），每次生成一个随机数就丢入NumScope分析该数组元素处于bucket的什么位置并统计每个bucket中元素数量。
-2、每次向service发送metrics字符时会将metrics之前收集的数据发送给prometheus
+ 1  每次向service发送abc字符时会产生一个不固定长度的数组，这个数组长度由随机数生成（5～10之间），
+    数组长度多长，我们的计数器NumCount就进行同样次数的加1操作，之后使用一个循环，生成数组元素，
+    生成数组元素仍然使用随机数（0～10之间），每次生成一个随机数就丢入NumScope分析该数组元素处于bucket的什么位置并统计每个bucket中元素数量。
+
+ 2  每次向service发送metrics字符时会将metrics之前收集的数据发送给prometheus。
+ 
+
+对一些主要函数与数据结构进行介绍 
+
+源代码一样此处定义两个指标，分别为数组长度和数组元素所处区间统计
+//我们使用的指标仍然时一个计数器requestCount
+//以及一个requestLatency来统计数字所处区间的bucket
+var (
+    NumCount = prometheus.NewCounterVec(
+        prometheus.CounterOpts{
+            Name: "Num_Total", //改变Name属性，作为稍后产生数字的个数或者数组长度
+            Help: "Number of request processed by this service.",
+        }, []string{},
+    )
+    NumScope = prometheus.NewHistogramVec(
+        prometheus.HistogramOpts{
+            //改变Name属性，记录数组中小于当前bucket的元素个数
+            Name:   "Num_less_than",             
+            Help:   "Num less than buckets",
+            Buckets:   []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},//依次为数组中小于等于1.0的元素个数，小于等于2.0的元素个数.....小于等于10.0的元素个数
+
+        }, []string{},
+    )
+)
+
+
+NewNum_Produce函数
+在本函数中，我们首先使用产生一个5～10的随机数，这个随机数我们可以作为数组长度，然后再使用随机数产生数组元素，
+每一个数组元素产生之后直接进行计数器加一和bucket统计操作，所以数组元素就不需要进行存储了。
+
+//定义函数NewNum_Produce，在本函数中，我们首先使用产生一个5～10的随机数
+//这个随机数我们可以作为数组长度
+//然后再使用随机数产生数组元素，每一个数组元素产生之后直接进行计数器加一和
+//bucket统计操作，所以数组元素就不需要进行存储了
+func NewNum_Produce() {
+    Array_Length := rand.Intn(5) + 5 //使用随机数产生数组长度
+    fmt.Printf("\n")
+    for i := 0; i < Array_Length; i++ {
+        //随机生成数字，作为数组元素，由于每次产生一个数组元素就进行一次计数器加一
+        //操作，以及判断数组元素属于哪一个区间的操作，所以无需定义数组变量存储数组元素
+        num := rand.Intn(10) 
+        //调用NumCountIncrease函数，对计数器进行加操作
+        NumCountIncrease()  
+        //在终端打印随机生产的数字
+        fmt.Printf("%d ", num) 
+        //将数字丢入NumScope，判断新产生的数字属于哪一个bucket
+        NumScope.WithLabelValues().Observe(float64(num)) 
+    }
+}
+
+
+main和index
+进行了小小的改动，注意注释部分
+func main(){
+    http.HandleFunc("/abc", index)  //收到字符abc直接调用index函数
+    //收到metrics字符时会将metrics之前收集的数据发送给prometheus
+    http.Handle("/metrics", promhttp.Handler()) 
+    metrics.Register()
+    err := http.ListenAndServe(":5565", nil) // 设置监听的端口
+    if err != nil {
+        log.Fatal("ListenAndServe: ", err)
+    }
+}
+func index(w http.ResponseWriter, r *http.Request) {
+    //调用NewNum_Produce函数
+    metrics.NewNum_Produce()
+    num:=os.Getenv("Num")
+    if num==""{
+        Fibonacci(10)
+        _,err:=w.Write([]byte("there is no env Num. Computation successed\n"))
+        if err!=nil{
+            log.Println("err:"+err.Error()+" No\n")
+        }
+    }else{
+        numInt,_:=strconv.Atoi(num)
+        Fibonacci(numInt)
+        _,err:=w.Write([]byte("there is env Num. Computation successed\n"))
+        if err!=nil{
+            log.Println("err:"+err.Error()+" Yes\n")
+        }
+    }
+}
+
+
+Register以及NumCountIncrease函数
+//对计数器进行加操作,count自行加一
+func NumCountIncrease() {
+    NumCount.WithLabelValues().Add(1)
+}
+
+//将NumCount和NumScope采集到的数据给prometheus
+func Register() {
+    prometheus.MustRegister(NumCount)
+    prometheus.MustRegister(NumScope)
+}
+
+
